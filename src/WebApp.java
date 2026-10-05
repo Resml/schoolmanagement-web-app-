@@ -103,12 +103,64 @@ public class WebApp {
     // =====================================================
 
     static Connection connect() throws SQLException {
+        try {
+            return DriverManager.getConnection(
+                    DB_URL,
+                    DB_USER,
+                    DB_PASSWORD
+            );
+        } catch (SQLException e) {
+            String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            if (System.getenv("DB_USER") == null && (
+                    msg.contains("password authentication failed") ||
+                    msg.contains("role \"postgres\" does not exist") ||
+                    (msg.contains("role") && msg.contains("does not exist"))
+            )) {
+                try {
+                    String localUser = System.getProperty("user.name");
+                    return DriverManager.getConnection(DB_URL, localUser, "");
+                } catch (SQLException ignored) {
+                }
+            }
+            throw e;
+        }
+    }
 
-        return DriverManager.getConnection(
-                DB_URL,
-                DB_USER,
-                DB_PASSWORD
-        );
+    static void ensureDatabaseExists() {
+        if (!DB_URL.contains("school_management")) {
+            return;
+        }
+        try (Connection testConn = connect()) {
+            return;
+        } catch (SQLException e) {
+            String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            if (msg.contains("does not exist") || msg.contains("database \"school_management\"")) {
+                String maintenanceUrl = DB_URL.replace("/school_management", "/postgres");
+                boolean created = false;
+                try (Connection mConn = DriverManager.getConnection(maintenanceUrl, DB_USER, DB_PASSWORD);
+                     Statement st = mConn.createStatement()) {
+                    st.executeUpdate("CREATE DATABASE school_management");
+                    created = true;
+                } catch (Exception ignored) {
+                }
+
+                if (!created) {
+                    try {
+                        String localUser = System.getProperty("user.name");
+                        try (Connection mConn = DriverManager.getConnection(maintenanceUrl, localUser, "");
+                             Statement st = mConn.createStatement()) {
+                            st.executeUpdate("CREATE DATABASE school_management");
+                            created = true;
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
+
+                if (created) {
+                    System.out.println("Database 'school_management' verified/created.");
+                }
+            }
+        }
     }
 
 
@@ -117,6 +169,8 @@ public class WebApp {
     // =====================================================
 
     static void createTables() {
+
+        ensureDatabaseExists();
 
         try (
                 Connection conn = connect();
@@ -1904,80 +1958,109 @@ public class WebApp {
         String message =
                 e.getMessage();
 
-
         if (message == null) {
-
             message =
                     e.getClass()
                             .getSimpleName();
         }
 
+        String lower = message.toLowerCase();
+        StringBuilder hintHtml = new StringBuilder();
+
+        if (lower.contains("refused") || (lower.contains("5432") && lower.contains("postmaster"))) {
+            hintHtml.append("<div style='background:#fef2f2; border:1px solid #fecaca; border-radius:8px; padding:18px; margin:20px 0; text-align:left;'>")
+                    .append("<h3 style='color:#991b1b; margin-top:0;'>⚠️ PostgreSQL Server is Not Running</h3>")
+                    .append("<p style='color:#374151; margin-bottom:8px;'>The application tried to connect to <code>localhost:5432</code>, but no PostgreSQL server is accepting connections.</p>")
+                    .append("<p style='color:#374151; margin-bottom:4px;'><strong>Fix (macOS Terminal):</strong></p>")
+                    .append("<div style='background:#111827; color:#34d399; padding:10px 14px; border-radius:6px; font-family:monospace; margin-bottom:10px;'>brew services start postgresql@14</div>")
+                    .append("<p style='color:#6b7280; font-size:13px; margin:0;'>Once started, click the Retry button below.</p>")
+                    .append("</div>");
+        } else if (lower.contains("database \"school_management\" does not exist") || (lower.contains("database") && lower.contains("does not exist"))) {
+            hintHtml.append("<div style='background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:18px; margin:20px 0; text-align:left;'>")
+                    .append("<h3 style='color:#1e40af; margin-top:0;'>⚠️ Database Not Created Yet</h3>")
+                    .append("<p style='color:#374151; margin-bottom:8px;'>The PostgreSQL database <code>school_management</code> does not exist yet.</p>")
+                    .append("<p style='color:#374151; margin-bottom:4px;'><strong>Fix (Terminal):</strong></p>")
+                    .append("<div style='background:#111827; color:#34d399; padding:10px 14px; border-radius:6px; font-family:monospace; margin-bottom:10px;'>createdb school_management</div>")
+                    .append("<p style='color:#6b7280; font-size:13px; margin:0;'>Then click Retry to reload this page.</p>")
+                    .append("</div>");
+        } else if (lower.contains("password authentication failed") || (lower.contains("role") && lower.contains("does not exist"))) {
+            hintHtml.append("<div style='background:#fefce8; border:1px solid #fef08a; border-radius:8px; padding:18px; margin:20px 0; text-align:left;'>")
+                    .append("<h3 style='color:#854d0e; margin-top:0;'>⚠️ PostgreSQL Authentication Issue</h3>")
+                    .append("<p style='color:#374151; margin-bottom:8px;'>PostgreSQL rejected user <code>" + escape(DB_USER) + "</code>.</p>")
+                    .append("<p style='color:#374151; margin-bottom:4px;'><strong>Fix:</strong> Create the user in PostgreSQL or set the <code>DB_USER</code> and <code>DB_PASSWORD</code> environment variables:</p>")
+                    .append("<div style='background:#111827; color:#34d399; padding:10px 14px; border-radius:6px; font-family:monospace; margin-bottom:10px;'>psql -d postgres -c \"CREATE USER " + escape(DB_USER) + " WITH SUPERUSER PASSWORD '" + escape(DB_PASSWORD) + "';\"</div>")
+                    .append("</div>");
+        }
 
         String html =
                 "<!DOCTYPE html>" +
-
                 "<html>" +
-
                 "<head>" +
-
-                "<title>Error</title>" +
-
+                "<title>Error - School Management System</title>" +
                 "<style>" +
-
                 "body {" +
-                "font-family: Arial;" +
+                "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;" +
                 "background: #f4f6f8;" +
                 "text-align: center;" +
-                "padding: 60px;" +
+                "padding: 60px 20px;" +
                 "}" +
-
                 ".error {" +
                 "background: white;" +
-                "max-width: 800px;" +
+                "max-width: 720px;" +
                 "margin: auto;" +
-                "padding: 30px;" +
+                "padding: 35px 30px;" +
                 "border-radius: 12px;" +
-                "box-shadow: 0 3px 12px #ddd;" +
+                "box-shadow: 0 4px 20px rgba(0,0,0,0.08);" +
                 "}" +
-
                 "h1 {" +
                 "color: #dc2626;" +
+                "margin-top: 0;" +
                 "}" +
-
-                ".back {" +
+                ".raw-error {" +
+                "background: #f8fafc;" +
+                "border: 1px solid #e2e8f0;" +
+                "padding: 12px;" +
+                "border-radius: 6px;" +
+                "color: #475569;" +
+                "font-family: monospace;" +
+                "font-size: 13px;" +
+                "word-break: break-word;" +
+                "margin: 15px 0;" +
+                "text-align: left;" +
+                "}" +
+                ".btn {" +
                 "display: inline-block;" +
-                "margin-top: 20px;" +
-                "padding: 10px 20px;" +
+                "margin: 8px;" +
+                "padding: 10px 22px;" +
+                "font-size: 14px;" +
+                "font-weight: 600;" +
+                "text-decoration: none;" +
+                "border-radius: 6px;" +
+                "cursor: pointer;" +
+                "border: none;" +
+                "}" +
+                ".btn-retry {" +
+                "background: #10b981;" +
+                "color: white;" +
+                "}" +
+                ".btn-dashboard {" +
                 "background: #2563eb;" +
                 "color: white;" +
-                "text-decoration: none;" +
-                "border-radius: 5px;" +
                 "}" +
-
                 "</style>" +
-
                 "</head>" +
-
                 "<body>" +
-
                 "<div class='error'>" +
-
                 "<h1>Something went wrong</h1>" +
-
-                "<p>" +
-                escape(message) +
-                "</p>" +
-
-                "<a class='back' href='/'>" +
-                "Back to Dashboard" +
-                "</a>" +
-
+                "<div class='raw-error'>" + escape(message) + "</div>" +
+                hintHtml.toString() +
+                "<div style='margin-top: 25px;'>" +
+                "<button class='btn btn-retry' onclick='window.location.reload()'>🔄 Retry</button>" +
+                "<a class='btn btn-dashboard' href='/'>Dashboard</a>" +
                 "</div>" +
-
+                "</div>" +
                 "</body>" +
-
                 "</html>";
-
 
         return html;
     }
